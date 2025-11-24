@@ -14,20 +14,40 @@ Before configuring, you may need to:
 
 ### Configuration
 
-`options.deviceOverrides` is an **optional** array of device overriding config objects, which is used for converting "non-standard schema" to "standard schema", making the device compatible with this plugin. The structure of each element in the array is described as follows:
+`options.deviceOverrides` is an **optional** array of device overriding config objects, which is used for converting "non-standard schema" to "standard schema", making the device compatible with this plugin. The plugin resolves overrides in three layers:
+
+1. **Device or Scene match**: an entry whose `id` matches the device `id` or `uuid`.
+2. **Product match**: an entry whose `id` equals the device `product_id`.
+3. **Global defaults**: an entry whose `id` is `global` that applies to every device.
+
+Only one entry per `id` is allowed; duplicated `id` or duplicated schema `code` within an entry will fail validation. Schema lookups use the first matching override, so avoid overlapping definitions across the three layers.
+
+Each element in the array is described as follows:
 
 - `id` - **required**: Device ID, Product ID, Scene ID, or `global`.
 - `category` - **optional**: Device category code. See [SUPPORTED_DEVICES.md](./SUPPORTED_DEVICES.md). Also you can use `hidden` to hide the device, product, or scene. **⚠️Overriding this property may lead to unexpected behaviors and exceptions, so please remove the accessory cache after making changes.**
 - `unbridged` - **optional**: Unbridge accessories. Defaults to `false`.
 - `adaptiveLighting` - **optional**: Adaptive Lighting. Defaults to `false`. Not all light device support this feature, please use it on demand.
 - `schema` - **optional**: An array of schema overriding config objects, used for describing datapoint (DP). When your device has non-standard DP, you need to transform them manually with configuration. Each element in the schema array is described as follows:
-  - `code` - **required**: DP code.
-  - `newCode` - **optional**: New DP code.
+  - `code` - **required**: DP code in the device payload. This is the value the cloud reports and the plugin sends by default.
+  - `newCode` - **optional**: Alias DP code exposed to HomeKit. Use this to rename a DP while keeping the device payload unchanged.
   - `type` - **optional**: New DP type. One of `Boolean`, `Integer`, `Enum`, `String`, `Json`, or `Raw`.
   - `property` - **optional**: New DP property object. For `Integer` type, the object should contain `min`, `max`, `scale`, and `step`. For `Enum` type, the object should contain `range`. For more information, see `TuyaDeviceSchemaProperty` in [TuyaDevice.ts](./src/device/TuyaDevice.ts).
-  - `onGet` - **optional**: A one-line JavaScript code to convert the old value to the new value. The function is called with two arguments: `device` and `value`.
-  - `onSet` - **optional**: A one-line JavaScript code to convert the new value to the old value. The function is called with two arguments: `device` and `value`. Returning `undefined` means to skip sending the command.
+  - `onGet` - **optional**: A one-line JavaScript code to convert the device payload value into the HomeKit-facing value when reading status. The function is called with two arguments: `device` and `value`.
+  - `onSet` - **optional**: A one-line JavaScript code to convert the HomeKit-facing value back into the device payload value when sending commands. The function is called with two arguments: `device` and `value`. Returning `undefined` means to skip sending the command.
   - `hidden` - **optional**: Hide the schema. Defaults to `false`.
+
+> 🧭 **Which side should overrides model?** Always describe the HomeKit-facing shape in your overrides. `newCode` and transformed `type`/`property` metadata tell the plugin what HomeKit should see, while `onGet` and `onSet` bridge between that HomeKit view and the raw Tuya payload the device actually uses.
+
+### How overrides are applied
+
+The plugin rewrites schemas and statuses at runtime according to the following flow:
+
+1. **Schema discovery**: When a characteristic asks for a DP, the plugin looks up the matching `schema` override (respecting `newCode` aliases). If a match is marked `hidden`, the DP is ignored; otherwise, the override can change the DP's type or property metadata before HomeKit sees it.
+2. **Reading status (`onGet`)**: When status is received from Tuya, the original DP code/value is transformed using `onGet` and/or `newCode` before the accessory handler uses it. This lets you normalize odd Tuya payloads into the shapes HomeKit expects.
+3. **Sending commands (`onSet`)**: When HomeKit sends a command, the plugin applies `onSet` to convert the normalized HomeKit value back to the original DP payload, and rewrites the code back to `code` if `newCode` was set.
+
+Because overrides happen dynamically, you can usually adjust behaviour without touching the device cache. However, if you change `category`, `schema` `code`/`newCode`, or `hidden` flags, clear the Homebridge accessory cache to avoid stale metadata.
 
 
 ## Examples
